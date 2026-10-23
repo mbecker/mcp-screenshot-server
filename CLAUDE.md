@@ -4,8 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-An MCP (Model Context Protocol) server that provides two screenshot tools to AI assistants:
+An MCP (Model Context Protocol) server that provides four tools to AI assistants:
 - **`take_screenshot`** — web page capture via headless Puppeteer/Chromium
+- **`take_page_screenshots`** — web page capture across device presets (`src/config/device-presets.ts`) following same-origin links N levels deep, plus a rebuild package (DESIGN.md, Tailwind `theme.css`, `fonts.css`, `assets/`, per-page Tailwind HTML and content JSON, `manifest.json`, `AGENTS.md`)
+- **`compare_screenshots`** — screenshots a local re-implementation at the captured paths/presets and pixel-diffs it against a capture's originals
 - **`take_system_screenshot`** — cross-platform system screenshots using native OS tools (macOS `screencapture`, Linux `maim`/`scrot`/etc., Windows PowerShell+.NET)
 
 Published to npm as `universal-screenshot-mcp`.
@@ -20,6 +22,7 @@ npm run test:integration # Integration tests (real DNS, real filesystem)
 npm run test:e2e         # E2E tests (real Puppeteer, real screencapture)
 npm run test:all         # All tiers together
 npm run test:linux       # Linux e2e via Docker (Xvfb + maim/scrot/import)
+npm run test:capture -- --url <url> [--presets a,b] [--depth n] [--out dir]  # capture a site in Docker (Dockerfile.capture → scripts/capture.mjs)
 npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage
 npm run lint             # ESLint on src/
@@ -32,13 +35,14 @@ Run a single test file: `npx vitest run tests/validators/url.test.ts`
 
 - **`ALLOW_LOCAL=true`** — Permit loopback addresses (127.x.x.x, ::1, localhost) through SSRF validation. Useful for screenshotting local dev servers. Off by default.
 - **`SCREENSHOT_OUTPUT_DIR`** — Override the default screenshot output directory (relative to `~`). Defaults to `~/Documents/screenshots`.
+- **`SCREENSHOT_UPLOAD_URL`** (+ `_FIELD`, `_HEADERS`) — Generic multipart upload of each saved screenshot via `src/utils/upload.ts`. Unset = no upload.
 
 ## Architecture
 
 **ESM-only** (`"type": "module"`), TypeScript strict mode, target ES2022, Node16 module resolution. Output goes to `build/`.
 
 ### Entry flow
-`src/index.ts` → passes a `createServer` factory (from `src/server.ts`) to `serveStdio()`. `server.ts` registers both tools on an `McpServer` instance.
+`src/index.ts` → passes a `createServer` factory (from `src/server.ts`) to `serveStdio()`. `server.ts` registers all tools on an `McpServer` instance.
 
 `serveStdio()` owns the protocol-era decision: the opening exchange selects the era and pins one server instance for the connection's lifetime. Its `legacy` option is deliberately left at the default `'serve'` so clients still speaking the 2025-era `initialize` handshake keep working — passing `'reject'` would break every currently-installed client.
 
@@ -54,6 +58,19 @@ The SDK is v2, which ships as `@modelcontextprotocol/server` (not `@modelcontext
 - `windows-provider.ts` — generates and runs PowerShell scripts using .NET `System.Drawing`
 
 All providers use `execFile` (no shell) to prevent command injection (SEC-003).
+
+### Web capture
+`src/utils/browser.ts` `launchGuardedPage()` launches Chromium with the SSRF protections (IP pinning + navigation re-validation). Every Puppeteer-based tool must use it.
+
+### Design extraction
+- `src/utils/design-collect.ts` — `collectPage()` runs **inside the browser** via `page.evaluate`, so it must stay self-contained (no imports or outer references). One DOM walk collects computed-style statistics and returns a `DomNode` tree with per-property classes (hidden elements kept as placeholders so paths match across widths). Runs once per preset.
+- `src/utils/design-html.ts` — `renderResponsive()` merges the per-preset trees by element path into mobile-first HTML: a property gets a `md:`-style variant only where its value changes from the tier below; `RESET` holds each property's preflight default for switching back.
+- `src/utils/design-md.ts` — `buildDesign()` (Node) merges pages into tokens and writes DESIGN.md per the [google-labs-code/design.md](https://github.com/google-labs-code/design.md) spec (section order is normative), the Tailwind v4 `@theme`, and per-page HTML with arbitrary values rewritten to token classes.
+- `src/utils/consent.ts` — `clickConsentButton()` runs in every frame (self-contained, like `collectPage`): known consent-platform selectors first, then accept/reject button texts, only inside a cookie/privacy container (never climbing to `<body>`, whose footer would match anywhere).
+- `src/utils/assets.ts` — records image/font/stylesheet responses during capture, builds `fonts.css`, rewrites URLs to `assets/`.
+- `src/utils/handoff.ts` — `manifest.json` schema (read by `compare_screenshots`) and `AGENTS.md`.
+- `src/utils/image-diff.ts` — pixel diff run inside Chromium (it decodes/encodes the PNGs; no image library). The compare tool must `bringToFront()` its capture tab before each screenshot: the diff tab steals focus and a background tab's screenshot hangs.
+- The collector is covered by `tests/utils/design-collect.integration.test.ts` (real Chromium); `renderResponsive` and `buildDesign` by unit tests.
 
 ### Security validators (`src/validators/`)
 - `url.ts` — SSRF prevention: blocks private IPs, resolves DNS pre-request, pins IPs via `--host-resolver-rules`

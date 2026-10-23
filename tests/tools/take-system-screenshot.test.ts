@@ -21,6 +21,7 @@ vi.mock('../../src/utils/helpers.js', () => ({
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
+  openAsBlob: vi.fn(),
 }));
 
 // Mock the screenshot provider module

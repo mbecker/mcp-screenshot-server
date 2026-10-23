@@ -5,6 +5,7 @@ import { defaultOutDir, ensureDefaultDirectory } from '../config/runtime.js';
 import { ALLOWED_OUTPUT_DIRS } from '../config/index.js';
 import { validateOutputPath } from '../validators/path.js';
 import { ok, err, timestamp, ensureDir } from '../utils/helpers.js';
+import { withUpload } from '../utils/upload.js';
 import { getScreenshotProvider } from '../utils/screenshot-provider.js';
 
 // No semaphore — system screenshot tools are lightweight (< 100ms, < 10MB)
@@ -94,7 +95,7 @@ export function registerTakeSystemScreenshot(server: McpServer): void {
         }
 
         if (!existsSync(dest)) return err('Screenshot failed — file not created');
-        return ok(`System screenshot saved: ${dest}`);
+        return await withUpload(`System screenshot saved: ${dest}`, [dest]);
       } catch (e) {
         return err(
           `System screenshot error: ${e instanceof Error ? e.message : e}`
