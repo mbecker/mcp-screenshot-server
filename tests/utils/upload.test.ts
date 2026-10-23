@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { uploadScreenshot } from '../../src/utils/upload.js';
+import { uploadScreenshot, createUploader } from '../../src/utils/upload.js';
 
 const openAsBlobImpl = vi.fn().mockResolvedValue(new Blob(['png']));
 const okRes = (body = '') => vi.fn(async () => new Response(body, { status: 200 }));
@@ -45,5 +45,35 @@ describe('uploadScreenshot', () => {
   it('throws on HTTP error', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 500 }));
     await expect(uploadScreenshot('/tmp/a.png', { url: 'https://s/up', fetchImpl, openAsBlobImpl })).rejects.toThrow('HTTP 500');
+  });
+});
+
+describe('createUploader', () => {
+  it('uploads in queue order in the background and reports each outcome', async () => {
+    const order: string[] = [];
+    const upload = vi.fn(async (dest: string) => {
+      await new Promise(r => setTimeout(r, dest.includes('slow') ? 20 : 0));
+      order.push(dest);
+      if (dest.includes('bad')) throw new Error('HTTP 500');
+      return 'https://h/up';
+    });
+    const lines: string[] = [];
+    const u = createUploader(l => lines.push(l), upload);
+    u.add('/out/slow.png');
+    u.add('/out/fast.png');
+    expect(order).toEqual([]); // add() does not block
+    u.add('/out/bad.md');
+    const r = await u.finish('Saved 3 files');
+    expect(order).toEqual(['/out/slow.png', '/out/fast.png', '/out/bad.md']); // one after another, in order
+    expect(lines).toEqual(['Uploaded slow.png: https://h/up', 'Uploaded fast.png: https://h/up', 'Upload error (/out/bad.md): HTTP 500']);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(['Saved 3 files', ...lines].join('\n'));
+  });
+
+  it('is a no-op without an upload URL', async () => {
+    const u = createUploader(undefined, async () => null);
+    u.add('/out/a.png');
+    const r = await u.finish('Saved 1 files');
+    expect(r).toEqual({ content: [{ type: 'text', text: 'Saved 1 files' }] });
   });
 });

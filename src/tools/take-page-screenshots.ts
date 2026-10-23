@@ -9,7 +9,7 @@ import { DEVICE_PRESETS, DEVICE_PRESET_NAMES } from '../config/device-presets.js
 import { validateUrl } from '../validators/url.js';
 import { launchGuardedPage } from '../utils/browser.js';
 import { err, timestamp } from '../utils/helpers.js';
-import { withUpload } from '../utils/upload.js';
+import { createUploader } from '../utils/upload.js';
 import { collectPage, loadLazyContent, type PageContent } from '../utils/design-collect.js';
 import { buildDesign, type CapturedPage } from '../utils/design-md.js';
 import { recordAssets, buildFontsCss, localizeUrls } from '../utils/assets.js';
@@ -71,6 +71,8 @@ export function registerTakePageScreenshots(server: McpServer): void {
       }
 
       let browser: Browser | undefined;
+      // Files are uploaded as soon as they exist (no-op unless SCREENSHOT_UPLOAD_URL is set)
+      const uploader = createUploader(process.env.SCREENSHOT_UPLOAD_URL ? progress : undefined);
       try {
         let page;
         ({ browser, page } = await launchGuardedPage(url, urlValidation));
@@ -112,6 +114,7 @@ export function registerTakePageScreenshots(server: McpServer): void {
               const dest = join(outDir, `${prefix}-${name}.png`);
               await page.screenshot({ path: dest, fullPage });
               screenshots.push(dest);
+              uploader.add(dest);
               shots[name] = basename(dest);
               if (extractDesign) {
                 // After the screenshot, so it shows the page as first loaded
@@ -191,21 +194,23 @@ export function registerTakePageScreenshots(server: McpServer): void {
           for (const [name, content] of written) {
             const dest = join(outDir, name);
             writeFileSync(dest, content);
-            files.push(dest); // uploaded together with the screenshots (assets/ stays local)
+            files.push(dest);
+            uploader.add(dest); // assets/ stays local
           }
           report.push(`Rebuild package: AGENTS.md, ${MANIFEST}, DESIGN.md, theme.css${fontsCss ? ', fonts.css' : ''}, ` +
             `${captured.length} page(s) .html + .content.json, ${assets.files.size} asset(s) in assets/`);
         }
 
-        if (process.env.SCREENSHOT_UPLOAD_URL) progress(`uploading ${files.length} files`);
+        if (process.env.SCREENSHOT_UPLOAD_URL) progress('waiting for remaining uploads');
         const skipped = queue.length - Math.min(queue.length, maxPages);
-        return await withUpload(
+        return await uploader.finish(
           `Saved ${files.length} files to ${outDir}\n${report.join('\n')}` +
-            (skipped ? `\n${skipped} more linked pages not captured (maxPages=${maxPages})` : ''),
-          files
+            (skipped ? `\n${skipped} more linked pages not captured (maxPages=${maxPages})` : '')
         );
       } catch (e) {
-        return err(`Screenshot error: ${e instanceof Error ? e.message : e}`);
+        // Still wait for uploads already queued, so nothing in flight is lost
+        const r = await uploader.finish(`Screenshot error: ${e instanceof Error ? e.message : e}`);
+        return { ...r, isError: true };
       } finally {
         if (browser) {
           try { await browser.close(); } catch { /* browser may already be dead */ }

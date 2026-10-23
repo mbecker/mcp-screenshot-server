@@ -13,9 +13,13 @@ vi.mock('../../src/config/runtime.js', () => ({
 
 vi.mock('../../src/config/index.js', () => ({ MAX_CONCURRENT_SCREENSHOTS: 3, ALLOW_LOCAL: false }));
 vi.mock('../../src/validators/url.js', () => ({ validateUrl: vi.fn() }));
-const uploaded: string[][] = [];
+// Every queued upload, in order, plus what the page had loaded when it was queued
+const queued: { file: string; gotoCalls: number }[] = [];
 vi.mock('../../src/utils/upload.js', () => ({
-  withUpload: async (msg: string, files: string[]) => { uploaded.push(files); return { content: [{ type: 'text', text: msg }] }; },
+  createUploader: () => ({
+    add: (dest: string) => { queued.push({ file: dest.split('/').pop()!, gotoCalls: mockPage.goto.mock.calls.length }); },
+    finish: async (msg: string) => ({ content: [{ type: 'text', text: msg }] }),
+  }),
 }));
 vi.mock('fs', () => ({ mkdirSync: vi.fn(), writeFileSync: vi.fn() }));
 vi.mock('../../src/utils/design-md.js', () => ({
@@ -58,6 +62,7 @@ registerTakePageScreenshots(new McpServer({ name: 'test', version: '1.0.0' } as 
 describe('take-page-screenshots', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    queued.length = 0;
     mockSemaphore.tryAcquire.mockReturnValue(true);
     mockPage.evaluate.mockImplementation(async (fn: { name: string }) => fn.name === 'loadLazyContent' ? undefined : ({
       styles: { fonts: {} }, tree: null, truncated: false,
@@ -117,11 +122,12 @@ describe('take-page-screenshots', () => {
       ['/b', { 'iphone-17': '02-b-iphone-17.png', desktop: '02-b-desktop.png' }],
     ]);
     expect(manifest.presets.map((p: { name: string; width: number }) => [p.name, p.width])).toEqual([['iphone-17', 402], ['desktop', 1920]]);
-    // the package (not assets/) is uploaded together with the screenshots
-    expect(uploaded.at(-1)!.map(f => f.split('/').pop())).toEqual([
+    // screenshots are queued for upload as soon as they are taken, the package (not assets/) at the end
+    expect(queued.map(q => q.file)).toEqual([
       '00-home-iphone-17.png', '00-home-desktop.png', '01-a-iphone-17.png', '01-a-desktop.png',
       '02-b-iphone-17.png', '02-b-desktop.png', ...packageFiles,
     ]);
+    expect(queued[0].gotoCalls).toBe(1); // first screenshot queued before the next page load
     expect(mockBrowser.close).toHaveBeenCalled();
     expect(mockSemaphore.release).toHaveBeenCalled();
   });

@@ -56,18 +56,46 @@ export async function uploadScreenshot(
   return /^https?:\/\/\S+$/.test(body) ? body : url;
 }
 
+export interface Uploader {
+  /** Queue a saved file; uploads run one after another in the background. */
+  add(dest: string): void;
+  /** Wait for queued uploads and append each outcome to the message (error if any failed). */
+  finish(msg: string): Promise<McpToolResponse>;
+}
+
+/**
+ * Upload files as soon as they exist instead of all at the end, so long captures
+ * show results early and a run that dies halfway keeps what it already sent.
+ * `onLine` receives each outcome as it happens (e.g. for progress output).
+ */
+export function createUploader(onLine?: (line: string) => void, upload = uploadScreenshot): Uploader {
+  const lines: string[] = [];
+  let failed = false;
+  let chain = Promise.resolve();
+  const record = (line: string) => { lines.push(line); onLine?.(line); };
+  return {
+    add(dest) {
+      chain = chain.then(async () => {
+        try {
+          const url = await upload(dest);
+          if (url) record(`Uploaded ${basename(dest)}: ${url}`);
+        } catch (e) {
+          failed = true;
+          record(`Upload error (${dest}): ${e instanceof Error ? e.message : e}`);
+        }
+      });
+    },
+    async finish(msg) {
+      await chain;
+      const text = [msg, ...lines].join('\n');
+      return failed ? err(text) : ok(text);
+    },
+  };
+}
+
 /** Upload the saved files if configured and append each outcome to the message. */
 export async function withUpload(msg: string, dests: string[]): Promise<McpToolResponse> {
-  const lines = [msg];
-  let failed = false;
-  for (const dest of dests) {
-    try {
-      const url = await uploadScreenshot(dest);
-      if (url) lines.push(`Uploaded ${basename(dest)}: ${url}`);
-    } catch (e) {
-      failed = true;
-      lines.push(`Upload error (${dest}): ${e instanceof Error ? e.message : e}`);
-    }
-  }
-  return failed ? err(lines.join('\n')) : ok(lines.join('\n'));
+  const uploader = createUploader();
+  dests.forEach(d => uploader.add(d));
+  return uploader.finish(msg);
 }
