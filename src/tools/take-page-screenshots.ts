@@ -10,10 +10,14 @@ import { validateUrl } from '../validators/url.js';
 import { launchGuardedPage } from '../utils/browser.js';
 import { err, timestamp } from '../utils/helpers.js';
 import { createUploader } from '../utils/upload.js';
+import { dismissCookieBanner } from '../utils/consent.js';
 import { collectPage, loadLazyContent, type PageContent } from '../utils/design-collect.js';
 import { buildDesign, type CapturedPage } from '../utils/design-md.js';
 import { recordAssets, buildFontsCss, localizeUrls } from '../utils/assets.js';
 import { buildAgentsMd, MANIFEST, type Manifest } from '../utils/handoff.js';
+
+/** How long the first page may take to show its cookie banner. */
+const CONSENT_WAIT_MS = 4000;
 
 /** Cap on elements serialized per page, keeps the HTML readable for agents. */
 const MAX_HTML_NODES = 5000;
@@ -48,9 +52,10 @@ export function registerTakePageScreenshots(server: McpServer): void {
         fullPage: z.boolean().optional().describe('Capture the full scrollable page instead of the viewport'),
         waitForTimeout: z.number().min(0).max(30000).optional().describe('Delay in ms after each load, before the screenshot'),
         extractDesign: z.boolean().optional().describe('Write the rebuild package: design files, assets, page HTML and content, manifest, AGENTS.md (default true)'),
+        cookieBanner: z.enum(['accept', 'reject', 'keep']).optional().describe('Click "accept all" or "reject" on cookie/consent banners before each screenshot, or keep them (default accept)'),
       }),
     },
-    async ({ url, presets = DEVICE_PRESET_NAMES, depth = 0, maxPages = 20, fullPage = false, waitForTimeout, extractDesign = true }) => {
+    async ({ url, presets = DEVICE_PRESET_NAMES, depth = 0, maxPages = 20, fullPage = false, waitForTimeout, extractDesign = true, cookieBanner = 'accept' }) => {
       ensureDefaultDirectory();
 
       const urlValidation = await validateUrl(url, { allowLocal: ALLOW_LOCAL });
@@ -85,6 +90,8 @@ export function registerTakePageScreenshots(server: McpServer): void {
         const queue: { href: string; level: number }[] = [{ href: start.href, level: 0 }];
         const seen = new Set([start.href]);
         const origins = new Set([start.origin]);
+        let consentClicked: string | null = null;
+        let consentChecked = false;
         const files: string[] = [];
         const report: string[] = [];
         const captured: CapturedPage[] = [];
@@ -104,6 +111,14 @@ export function registerTakePageScreenshots(server: McpServer): void {
               await page.emulate(DEVICE_PRESETS[name]);
               await page.goto(href, { waitUntil: 'networkidle2', timeout: 30000 });
               if (waitForTimeout) await new Promise(r => setTimeout(r, waitForTimeout));
+              // Wait for a banner only on the first load; consent is then stored for the run,
+              // and pages without a banner only cost one quick check
+              const clicked = await dismissCookieBanner(page, cookieBanner, consentChecked ? 0 : CONSENT_WAIT_MS);
+              consentChecked = true;
+              if (clicked) {
+                consentClicked ??= clicked;
+                progress(`cookie banner: clicked "${clicked}"`);
+              }
               if (n === 0 && i === 0) {
                 // Follow links on the host the start page redirected to, if it is the same site
                 const landed = new URL(page.url());
@@ -202,6 +217,9 @@ export function registerTakePageScreenshots(server: McpServer): void {
         }
 
         if (process.env.SCREENSHOT_UPLOAD_URL) progress('waiting for remaining uploads');
+        if (cookieBanner !== 'keep') {
+          report.push(consentClicked ? `Cookie banner: clicked "${consentClicked}"` : 'Cookie banner: none found');
+        }
         const skipped = queue.length - Math.min(queue.length, maxPages);
         return await uploader.finish(
           `Saved ${files.length} files to ${outDir}\n${report.join('\n')}` +

@@ -18,6 +18,7 @@ const HELP = `Usage: capture.mjs --url <url> [options]
   --full-page          Capture the full scrollable page instead of the viewport
   --wait <ms>          Extra delay after each load, 0-30000
   --no-design          Screenshots only, skip the rebuild package
+  --cookie-banner <m>  accept (default), reject or keep cookie/consent banners
   -h, --help           Show this help
 
 Environment: SCREENSHOT_OUTPUT_DIR (relative to $HOME), ALLOW_LOCAL,
@@ -35,6 +36,7 @@ try {
       'full-page': { type: 'boolean' },
       wait: { type: 'string' },
       'no-design': { type: 'boolean' },
+      'cookie-banner': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -59,6 +61,7 @@ const args = Object.fromEntries(Object.entries({
   fullPage: v['full-page'],
   waitForTimeout: num(v.wait),
   extractDesign: v['no-design'] ? false : undefined,
+  cookieBanner: v['cookie-banner'],
 }).filter(([, val]) => val !== undefined));
 
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

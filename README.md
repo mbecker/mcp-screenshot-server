@@ -165,7 +165,10 @@ Mobile presets also set touch, mobile mode and a matching user agent. Presets li
 | `maxPages`       | number   | —        | Maximum pages to capture (1–100, default 20)         |
 | `fullPage`       | boolean  | —        | Capture the full scrollable page instead of the viewport |
 | `extractDesign`  | boolean  | —        | Write the design files below (default `true`)          |
+| `cookieBanner`   | string   | —        | `accept` (default) or `reject` cookie/consent banners before each screenshot, or `keep` them |
 | `waitForTimeout` | number   | —        | Delay in ms after each load, before the screenshot   |
+
+**Cookie banners.** Before each screenshot the tool clicks "accept all" (or, with `cookieBanner: "reject"`, the reject / necessary-only button) on consent banners: known platforms (OneTrust, Cookiebot, Usercentrics, Didomi, consentmanager, TrustArc, Google) by selector, others by button text in DE/EN/FR/ES/IT/NL. It searches shadow DOM and iframes, and only clicks buttons inside an element that is about cookies or privacy. Consent persists for the run, so only the first page waits (up to 4 s) for a banner. The result reports which button was clicked.
 
 **Rebuild package.** With `extractDesign` (default), the capture folder becomes everything an AI agent needs to re-implement the site locally. For every page the tool reads the rendered DOM at each chosen preset and writes, next to the screenshots:
 
@@ -358,6 +361,7 @@ npm run test:capture -- --url https://example.com --out ~/captures --full-page -
 | `--depth <n>` / `--max-pages <n>` | Follow same-origin links |
 | `--full-page`, `--wait <ms>` | Capture options |
 | `--no-design` | Screenshots only, no rebuild package |
+| `--cookie-banner <m>` | `accept` (default), `reject` or `keep` cookie banners |
 | `--out <dir>` | Host folder for results (default `./captures`) |
 | `--no-build` | Reuse the existing image |
 

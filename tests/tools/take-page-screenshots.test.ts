@@ -35,6 +35,8 @@ vi.mock('../../src/utils/assets.js', async (orig) => ({
   })),
 }));
 
+vi.mock('../../src/utils/consent.js', () => ({ dismissCookieBanner: vi.fn(async () => null) }));
+
 const mockPage = { emulate: vi.fn(), goto: vi.fn(), $$eval: vi.fn(), screenshot: vi.fn(), evaluate: vi.fn(), on: vi.fn(), waitForNetworkIdle: vi.fn(async () => {}), url: vi.fn(() => 'https://example.com/') };
 const mockBrowser = { close: vi.fn() };
 vi.mock('../../src/utils/browser.js', () => ({
@@ -51,6 +53,7 @@ vi.mock('@modelcontextprotocol/server', () => ({
 }));
 
 import { validateUrl } from '../../src/validators/url.js';
+import { dismissCookieBanner } from '../../src/utils/consent.js';
 import { writeFileSync } from 'fs';
 import { buildDesign } from '../../src/utils/design-md.js';
 import { DEVICE_PRESETS } from '../../src/config/device-presets.js';
@@ -146,6 +149,17 @@ describe('take-page-screenshots', () => {
     expect(await run('https://www.example.com/')).toEqual(['https://example.com/', 'https://www.example.com/a', 'https://example.com/b']);
     // redirect to an unrelated domain does not widen the crawl
     expect(await run('https://login.other.test/')).toEqual(['https://example.com/', 'https://example.com/b']);
+  });
+
+  it('dismisses cookie banners, waiting only on the first load, and reports the click', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue(['https://example.com/a']);
+    vi.mocked(dismissCookieBanner).mockResolvedValueOnce('Alle akzeptieren');
+    const result = await capturedHandler({ url: 'https://example.com/', presets: ['iphone-17', 'desktop'], depth: 1, extractDesign: false, cookieBanner: 'reject' });
+    const calls = vi.mocked(dismissCookieBanner).mock.calls;
+    expect(calls).toHaveLength(4); // 2 pages × 2 presets, each before its screenshot
+    expect(calls.map(c => [c[1], c[2]])).toEqual([['reject', 4000], ['reject', 0], ['reject', 0], ['reject', 0]]);
+    expect(result.content[0].text).toContain('Cookie banner: clicked "Alle akzeptieren"');
   });
 
   it('caps at maxPages and reports the rest', async () => {
