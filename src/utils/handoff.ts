@@ -18,6 +18,10 @@ export interface ManifestPage {
   prefix: string;
   /** preset name → screenshot file */
   screenshots: Record<string, string>;
+  /** preset name → scroll offset (px) → viewport screenshot after scrolling that far */
+  scrolled?: Record<string, Record<string, string>>;
+  /** click state → screenshots after clicking (e.g. an open mobile menu), plus its scroll shots */
+  states?: Record<string, { screenshots: Record<string, string>; scrolled?: Record<string, Record<string, string>> }>;
   html?: string;
   content?: string;
   /** The element cap was hit, so the HTML is incomplete (content JSON still has all text) */
@@ -64,6 +68,8 @@ export function buildAgentsMd(m: Manifest): string {
     '- `<nn>-<page>.html`: reference structure per page with mobile-first Tailwind classes measured from the live site (`md:`, `xl:` … where layout changes). Opens standalone in a browser. Use it to understand layout; build clean components rather than copying it verbatim.',
     '- `<nn>-<page>.content.json`: the full text, heading outline, links, images and form fields of each page. Use this for copy, the HTML may abbreviate.',
     '- `<nn>-<page>-<preset>.png`: screenshots of the original, the visual target.',
+    ...(m.pages.some(p => p.states) ? ['- `<nn>-<page>-<preset>-<state>.png` (and `…-<state>-scroll<N>.png`): the page after clicking an element, e.g. an open mobile menu. `manifest.json` lists them under `states`; rebuild these interactions too.'] : []),
+    ...(m.pages.some(p => p.scrolled) ? ['- `<nn>-<page>-<preset>-scroll<N>.png`: the same viewport after scrolling N px down. Compare with the unscrolled shot for scroll effects such as a shrinking or sticky header.'] : []),
     `- \`${MANIFEST}\`: machine-readable index of all of the above.`,
     '',
     '## Pages',

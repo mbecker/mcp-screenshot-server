@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
-import { clickConsentButton, dismissCookieBanner } from '../../src/utils/consent.js';
+import { clickConsentButton, dismissCookieBanner, removeElements } from '../../src/utils/consent.js';
 
 let browser: Browser;
 let page: Page;
@@ -79,5 +79,22 @@ describe('dismissCookieBanner', () => {
     await page.setContent(AOK_STYLE);
     expect(await dismissCookieBanner(page, 'keep', 1000)).toBeNull();
     expect(await clickedIn(page)).toBeNull();
+  });
+});
+
+describe('removeElements', () => {
+  it('removes matches in the document, shadow DOM and iframes, and reports invalid selectors', async () => {
+    await page.setContent(`<div role="alert">Wichtiges Sicherheits-Update</div><p class="keep">Content</p>
+      <div id="host"></div><script>document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<div class="promo">Sale</div>';</script>
+      <iframe srcdoc="<div class='promo'>Frame promo</div><p>stays</p>"></iframe>`);
+    await page.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('.promo'));
+    const r = await removeElements(page, ['[role="alert"]', '.promo', '!!']);
+    expect(r).toEqual({ removed: 3, invalid: ['!!'] });
+    expect(await page.evaluate(() => [
+      document.querySelectorAll('[role="alert"]').length,
+      document.getElementById('host')!.shadowRoot!.querySelectorAll('.promo').length,
+      document.querySelector('iframe')!.contentDocument!.querySelectorAll('.promo, p').length,
+      document.querySelectorAll('.keep').length,
+    ])).toEqual([0, 0, 1, 1]); // only the iframe's <p> and the main .keep remain
   });
 });

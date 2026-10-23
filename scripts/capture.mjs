@@ -17,8 +17,13 @@ const HELP = `Usage: capture.mjs --url <url> [options]
   --max-pages <n>      Maximum pages, 1-100 (default 20)
   --full-page          Capture the full scrollable page instead of the viewport
   --wait <ms>          Extra delay after each load, 0-30000
+  --scroll <px>        Extra screenshot after scrolling down <px>, e.g. 100 (repeatable)
+  --click <n>=<sel>    Extra screenshots after clicking <sel>, named after <n>, e.g.
+                       --click 'menu=button:has([data-icon="menu"])' (repeatable)
   --no-design          Screenshots only, skip the rebuild package
   --cookie-banner <m>  accept (default), reject or keep cookie/consent banners
+  --remove <selector>  Delete matching elements before screenshots, e.g. '[role="alert"]'
+                       (repeat for several)
   -h, --help           Show this help
 
 Environment: SCREENSHOT_OUTPUT_DIR (relative to $HOME), ALLOW_LOCAL,
@@ -35,8 +40,11 @@ try {
       'max-pages': { type: 'string' },
       'full-page': { type: 'boolean' },
       wait: { type: 'string' },
+      scroll: { type: 'string', multiple: true },
+      click: { type: 'string', multiple: true },
       'no-design': { type: 'boolean' },
       'cookie-banner': { type: 'string' },
+      remove: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -60,8 +68,12 @@ const args = Object.fromEntries(Object.entries({
   maxPages: num(v['max-pages']),
   fullPage: v['full-page'],
   waitForTimeout: num(v.wait),
+  scrollOffsets: v.scroll?.map(Number),
+  // name=selector; the selector itself may contain "="
+  clickStates: v.click?.map(c => ({ name: c.slice(0, c.indexOf('=')), selector: c.slice(c.indexOf('=') + 1) })),
   extractDesign: v['no-design'] ? false : undefined,
   cookieBanner: v['cookie-banner'],
+  removeSelectors: v.remove,
 }).filter(([, val]) => val !== undefined));
 
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -73,8 +85,10 @@ await client.connect(clientTransport);
 console.error(`Capturing ${url} ${JSON.stringify(args)}`);
 let result;
 try {
-  // Crawls with several presets easily take minutes
-  result = await client.callTool({ name: 'take_page_screenshots', arguments: args }, { timeout: 30 * 60 * 1000 });
+  // Crawls can take hours: no total limit, only fail after 10 min without a progress notification
+  result = await client.callTool({ name: 'take_page_screenshots', arguments: args }, {
+    timeout: 10 * 60 * 1000, resetTimeoutOnProgress: true, onprogress: () => {},
+  });
 } finally {
   await client.close();
   await server.close();

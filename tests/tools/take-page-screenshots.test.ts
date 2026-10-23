@@ -35,9 +35,12 @@ vi.mock('../../src/utils/assets.js', async (orig) => ({
   })),
 }));
 
-vi.mock('../../src/utils/consent.js', () => ({ dismissCookieBanner: vi.fn(async () => null) }));
+vi.mock('../../src/utils/consent.js', () => ({
+  dismissCookieBanner: vi.fn(async () => null),
+  removeElements: vi.fn(async () => ({ removed: 0, invalid: [] })),
+}));
 
-const mockPage = { emulate: vi.fn(), goto: vi.fn(), $$eval: vi.fn(), screenshot: vi.fn(), evaluate: vi.fn(), on: vi.fn(), waitForNetworkIdle: vi.fn(async () => {}), url: vi.fn(() => 'https://example.com/') };
+const mockPage = { emulate: vi.fn(), goto: vi.fn(), $$eval: vi.fn(), screenshot: vi.fn(), evaluate: vi.fn(), on: vi.fn(), waitForNetworkIdle: vi.fn(async () => {}), url: vi.fn(() => 'https://example.com/'), $$: vi.fn(async () => []) };
 const mockBrowser = { close: vi.fn() };
 vi.mock('../../src/utils/browser.js', () => ({
   launchGuardedPage: vi.fn(async () => ({ browser: mockBrowser, page: mockPage })),
@@ -53,7 +56,7 @@ vi.mock('@modelcontextprotocol/server', () => ({
 }));
 
 import { validateUrl } from '../../src/validators/url.js';
-import { dismissCookieBanner } from '../../src/utils/consent.js';
+import { dismissCookieBanner, removeElements } from '../../src/utils/consent.js';
 import { writeFileSync } from 'fs';
 import { buildDesign } from '../../src/utils/design-md.js';
 import { DEVICE_PRESETS } from '../../src/config/device-presets.js';
@@ -61,6 +64,19 @@ import { registerTakePageScreenshots } from '../../src/tools/take-page-screensho
 import { McpServer } from '@modelcontextprotocol/server';
 
 registerTakePageScreenshots(new McpServer({ name: 'test', version: '1.0.0' } as any));
+
+/** Run fn with fake timers, advancing the clock until it settles (the tool pauses for animations). */
+const withFastTimers = async <T,>(fn: () => Promise<T>): Promise<T> => {
+  vi.useFakeTimers();
+  let done = false;
+  const p = fn().finally(() => { done = true; });
+  try {
+    while (!done) await vi.advanceTimersByTimeAsync(500);
+  } finally {
+    vi.useRealTimers();
+  }
+  return p;
+};
 
 describe('take-page-screenshots', () => {
   beforeEach(() => {
@@ -160,6 +176,101 @@ describe('take-page-screenshots', () => {
     expect(calls).toHaveLength(4); // 2 pages × 2 presets, each before its screenshot
     expect(calls.map(c => [c[1], c[2]])).toEqual([['reject', 4000], ['reject', 0], ['reject', 0], ['reject', 0]]);
     expect(result.content[0].text).toContain('Cookie banner: clicked "Alle akzeptieren"');
+  });
+
+  it('removes elements by selector before each screenshot and before extraction, and reports them', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue([]);
+    vi.mocked(removeElements).mockResolvedValue({ removed: 1, invalid: ['!!'] });
+    const result = await capturedHandler({ url: 'https://example.com/', presets: ['desktop'], removeSelectors: ['[role="alert"]', '!!'] });
+    expect(vi.mocked(removeElements).mock.calls).toEqual([
+      [mockPage, ['[role="alert"]', '!!']], // before the screenshot
+      [mockPage, ['[role="alert"]', '!!']], // after the lazy-load pass, before collecting
+    ]);
+    expect(result.content[0].text).toContain('Removed 2 element(s) matching [role="alert"], !! (invalid selector: !!)');
+  });
+
+  it('loads lazy content before a full-page screenshot, but after a viewport screenshot', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue([]);
+    const order: string[] = [];
+    mockPage.screenshot.mockImplementation(async () => { order.push('screenshot'); });
+    const evalImpl = mockPage.evaluate.getMockImplementation()!;
+    mockPage.evaluate.mockImplementation(async (fn: { name: string }, ...a: unknown[]) => { order.push(fn.name); return evalImpl(fn, ...a); });
+
+    await capturedHandler({ url: 'https://example.com/', presets: ['desktop'], fullPage: true });
+    expect(order).toEqual(['loadLazyContent', 'screenshot', 'collectPage']);
+    expect(mockPage.screenshot).toHaveBeenCalledWith(expect.objectContaining({ fullPage: true }));
+
+    order.length = 0;
+    await capturedHandler({ url: 'https://example.com/', presets: ['desktop'] });
+    expect(order).toEqual(['screenshot', 'loadLazyContent', 'collectPage']);
+
+    order.length = 0;
+    await capturedHandler({ url: 'https://example.com/', presets: ['desktop'], fullPage: true, extractDesign: false });
+    expect(order).toEqual(['loadLazyContent', 'screenshot']); // still loads lazy content without extraction
+  });
+
+  it('takes extra viewport screenshots at scroll offsets, then returns to the top', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue([]);
+    const scrolls: unknown[] = [];
+    const evalImpl = mockPage.evaluate.getMockImplementation()!;
+    mockPage.evaluate.mockImplementation(async (fn: { name: string }, ...a: unknown[]) => {
+      if (fn.name !== 'loadLazyContent' && String(fn).includes('scrollTo')) { scrolls.push(a[0] ?? 0); return undefined; }
+      return evalImpl(fn, ...a);
+    });
+    await withFastTimers(() => capturedHandler({ url: 'https://example.com/', presets: ['desktop'], scrollOffsets: [100, 400], fullPage: true }));
+
+    expect(mockPage.screenshot.mock.calls.map(c => [c[0].path.split('/').pop(), !!c[0].fullPage])).toEqual([
+      ['00-home-desktop.png', true],
+      ['00-home-desktop-scroll100.png', false], // scrolled shots are always the viewport
+      ['00-home-desktop-scroll400.png', false],
+    ]);
+    expect(scrolls).toEqual([100, 400, 0]); // back to the top before extraction
+    expect(queued.slice(0, 3).map(q => q.file)).toEqual(['00-home-desktop.png', '00-home-desktop-scroll100.png', '00-home-desktop-scroll400.png']);
+    const manifest = JSON.parse(String(vi.mocked(writeFileSync).mock.calls.find(c => String(c[0]).endsWith('manifest.json'))![1]));
+    expect(manifest.pages[0].scrolled).toEqual({ desktop: { 100: '00-home-desktop-scroll100.png', 400: '00-home-desktop-scroll400.png' } });
+    expect(manifest.pages[0].screenshots).toEqual({ desktop: '00-home-desktop.png' }); // compare_screenshots input unchanged
+  });
+
+  it('captures click states per preset after a reload, skipping presets where the element is hidden', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue([]);
+    let preset = '';
+    mockPage.emulate.mockImplementation(async (d: { viewport: { width: number } }) => { preset = d.viewport.width < 768 ? 'mobile' : 'desktop'; });
+    const click = vi.fn(async () => {});
+    // The menu button exists on both, but is only visible on mobile (like "1000:hidden")
+    mockPage.$$.mockImplementation(async () => [{ isVisible: async () => preset === 'mobile', click }]);
+
+    const result = await withFastTimers(() => capturedHandler({
+      url: 'https://example.com/', presets: ['iphone-17', 'desktop'], scrollOffsets: [100],
+      clickStates: [{ name: 'menu', selector: 'button:has([data-icon="menu"])' }],
+    }));
+
+    expect(mockPage.$$).toHaveBeenCalledWith('button:has([data-icon="menu"])');
+    expect(click).toHaveBeenCalledTimes(1); // mobile only
+    expect(mockPage.goto).toHaveBeenCalledTimes(4); // per preset: load + reload for the state
+    expect(mockPage.screenshot.mock.calls.map(c => c[0].path.split('/').pop())).toEqual([
+      '00-home-iphone-17.png', '00-home-iphone-17-scroll100.png',
+      '00-home-iphone-17-menu.png', '00-home-iphone-17-menu-scroll100.png',
+      '00-home-desktop.png', '00-home-desktop-scroll100.png',
+    ]);
+    const manifest = JSON.parse(String(vi.mocked(writeFileSync).mock.calls.find(c => String(c[0]).endsWith('manifest.json'))![1]));
+    expect(manifest.pages[0].states).toEqual({
+      menu: { screenshots: { 'iphone-17': '00-home-iphone-17-menu.png' }, scrolled: { 'iphone-17': { 100: '00-home-iphone-17-menu-scroll100.png' } } },
+    });
+    expect(result.content[0].text).toContain('State "menu" (button:has([data-icon="menu"])): not visible on desktop');
+  });
+
+  it('reports an invalid click selector instead of failing the page', async () => {
+    mockPage.goto.mockResolvedValue(undefined);
+    mockPage.$$eval.mockResolvedValue([]);
+    mockPage.$$.mockRejectedValue(new Error('is not a valid selector'));
+    const result = await capturedHandler({ url: 'https://example.com/', presets: ['desktop'], extractDesign: false, clickStates: [{ name: 'menu', selector: '!!' }] });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Invalid click selector: menu: !!');
+    expect(result.content[0].text).toContain('https://example.com/ → 00-home-*.png');
   });
 
   it('caps at maxPages and reports the rest', async () => {

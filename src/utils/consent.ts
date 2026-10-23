@@ -1,5 +1,6 @@
 // ============================================================================
-// Accept or reject cookie/consent banners so they don't cover screenshots.
+// Clear what covers the page before a screenshot: accept or reject cookie/consent
+// banners, and remove elements the caller names by CSS selector.
 // ============================================================================
 
 import type { Frame, Page } from 'puppeteer';
@@ -99,4 +100,39 @@ export async function dismissCookieBanner(page: Page, mode: ConsentMode, waitMs:
     await new Promise(r => setTimeout(r, 250));
   } while (Date.now() < deadline);
   return null;
+}
+
+/**
+ * Runs in a frame via frame.evaluate(), so it must stay self-contained.
+ * Removes every element matching the selectors (document and open shadow roots).
+ */
+export function removeMatching(selectors: string[]): { removed: number; invalid: string[] } {
+  let removed = 0;
+  const invalid: string[] = [];
+  const roots = (root: Document | ShadowRoot): (Document | ShadowRoot)[] => [
+    root, ...Array.from(root.querySelectorAll('*')).flatMap(el => (el.shadowRoot ? roots(el.shadowRoot) : [])),
+  ];
+  const all = roots(document);
+  for (const sel of selectors) {
+    try {
+      for (const root of all) for (const el of Array.from(root.querySelectorAll(sel))) { el.remove(); removed++; }
+    } catch {
+      invalid.push(sel);
+    }
+  }
+  return { removed, invalid };
+}
+
+/** Remove matching elements in every frame. Invalid selectors are reported, not thrown. */
+export async function removeElements(page: Page, selectors: string[]): Promise<{ removed: number; invalid: string[] }> {
+  let removed = 0;
+  const invalid = new Set<string>();
+  if (!selectors.length) return { removed, invalid: [] };
+  for (const frame of page.frames() as Frame[]) {
+    const r = await frame.evaluate(removeMatching, selectors).catch(() => null); // detached/navigating frame
+    if (!r) continue;
+    removed += r.removed;
+    r.invalid.forEach(s => invalid.add(s));
+  }
+  return { removed, invalid: [...invalid] };
 }

@@ -163,12 +163,17 @@ Mobile presets also set touch, mobile mode and a matching user agent. Presets li
 | `presets`        | string[] | —        | Presets to capture (default: all)                    |
 | `depth`          | number   | —        | Link levels to follow (0–5, default 0 = only `url`)  |
 | `maxPages`       | number   | —        | Maximum pages to capture (1–100, default 20)         |
-| `fullPage`       | boolean  | —        | Capture the full scrollable page instead of the viewport |
+| `fullPage`       | boolean  | —        | Capture the full scrollable page, top to bottom; lazy-loaded content is loaded first |
+| `scrollOffsets`  | number[] | —        | Extra viewport screenshots after scrolling down by each value (px), named `…-scroll<N>.png`, e.g. `[100]` for a header that shrinks on scroll |
+| `clickStates`    | object[] | —        | `[{ "name": "menu", "selector": "button:has([data-icon=\"menu\"])" }]`: per preset, reload, click the element and take extra screenshots (plus scroll shots), named `…-<name>.png`; skipped where the element is not visible |
 | `extractDesign`  | boolean  | —        | Write the design files below (default `true`)          |
 | `cookieBanner`   | string   | —        | `accept` (default) or `reject` cookie/consent banners before each screenshot, or `keep` them |
+| `removeSelectors` | string[] | —       | CSS selectors of elements to delete before each screenshot and extraction, e.g. `["[role=\"alert\"]", ".promo"]` |
 | `waitForTimeout` | number   | —        | Delay in ms after each load, before the screenshot   |
 
 **Cookie banners.** Before each screenshot the tool clicks "accept all" (or, with `cookieBanner: "reject"`, the reject / necessary-only button) on consent banners: known platforms (OneTrust, Cookiebot, Usercentrics, Didomi, consentmanager, TrustArc, Google) by selector, others by button text in DE/EN/FR/ES/IT/NL. It searches shadow DOM and iframes, and only clicks buttons inside an element that is about cookies or privacy. Consent persists for the run, so only the first page waits (up to 4 s) for a banner. The result reports which button was clicked.
+
+Other overlays (notice bars, promos, chat widgets) can be removed with `removeSelectors`: matching elements are deleted in every frame and open shadow root before each screenshot, and again before the structure is collected, so they stay out of the rebuild HTML as well.
 
 **Rebuild package.** With `extractDesign` (default), the capture folder becomes everything an AI agent needs to re-implement the site locally. For every page the tool reads the rendered DOM at each chosen preset and writes, next to the screenshots:
 
@@ -250,7 +255,7 @@ Captures the desktop, a specific application window, or a screen region using na
 
 ### Uploading Screenshots
 
-Any endpoint that accepts a multipart file upload works. Every file a tool saves is uploaded, one request per file with its MIME type: screenshots and, for `take_page_screenshots`, also `DESIGN.md`, `theme.css` and the page `.html` files. If the response body is a bare URL (as many file hosts return), it is reported back; otherwise the endpoint URL is.
+Any endpoint that accepts a multipart file upload works. Every file a tool saves is uploaded, one request per file with its MIME type: screenshots and, for `take_page_screenshots`, also `DESIGN.md`, `theme.css` and the page `.html` files. If the response body is a bare URL (as many file hosts return), it is reported back; otherwise the endpoint URL is. Network errors, timeouts, 429 and 5xx responses are retried 3 times (after 1, 5 and 15 s) before a file is reported as failed.
 
 ```json
 "env": {
@@ -359,9 +364,13 @@ npm run test:capture -- --url https://example.com --out ~/captures --full-page -
 | `--url <url>` | Page to capture |
 | `--presets <list>` | Comma-separated presets (default: all) |
 | `--depth <n>` / `--max-pages <n>` | Follow same-origin links |
-| `--full-page`, `--wait <ms>` | Capture options |
+| `--full-page` | Whole page top to bottom instead of the first screen |
+| `--wait <ms>` | Extra delay after each load |
+| `--scroll <px>` | Extra screenshot after scrolling down `<px>` (repeatable), e.g. `--scroll 100` |
+| `--click <name>=<selector>` | Extra screenshots after clicking, e.g. `--click 'menu=button:has([data-icon="menu"])'` (repeatable) |
 | `--no-design` | Screenshots only, no rebuild package |
 | `--cookie-banner <m>` | `accept` (default), `reject` or `keep` cookie banners |
+| `--remove <selector>` | Delete matching elements before screenshots, e.g. `--remove '[role="alert"]'` (repeatable) |
 | `--out <dir>` | Host folder for results (default `./captures`) |
 | `--no-build` | Reuse the existing image |
 
