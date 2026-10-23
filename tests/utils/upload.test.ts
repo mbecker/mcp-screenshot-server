@@ -42,9 +42,26 @@ describe('uploadScreenshot', () => {
     expect((fetchImpl.mock.calls[0][1].body as FormData).has('file')).toBe(true);
   });
 
-  it('throws on HTTP error', async () => {
+  it('retries transient failures, then throws', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 500 }));
-    await expect(uploadScreenshot('/tmp/a.png', { url: 'https://s/up', fetchImpl, openAsBlobImpl })).rejects.toThrow('HTTP 500');
+    await expect(uploadScreenshot('/tmp/a.png', { url: 'https://s/up', fetchImpl, openAsBlobImpl, retryDelaysMs: [0, 0] }))
+      .rejects.toThrow('HTTP 500');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('succeeds after a network error', async () => {
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValue(new Response('https://host/x.png'));
+    await expect(uploadScreenshot('/tmp/a.png', { url: 'https://s/up', fetchImpl, openAsBlobImpl, retryDelaysMs: [0] }))
+      .resolves.toBe('https://host/x.png');
+  });
+
+  it('does not retry client errors', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 403 }));
+    await expect(uploadScreenshot('/tmp/a.png', { url: 'https://s/up', fetchImpl, openAsBlobImpl, retryDelaysMs: [0] }))
+      .rejects.toThrow('HTTP 403');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
 

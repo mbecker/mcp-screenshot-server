@@ -16,6 +16,8 @@ export interface UploadOptions {
   headers?: string;
   fetchImpl?: typeof fetch;
   openAsBlobImpl?: (path: string, options?: { type?: string }) => Promise<Blob>;
+  /** Waits before each retry of a transient failure (network error, 429, 5xx). */
+  retryDelaysMs?: number[];
 }
 
 const MIME: Record<string, string> = {
@@ -37,23 +39,33 @@ export async function uploadScreenshot(
     headers = process.env.SCREENSHOT_UPLOAD_HEADERS,
     fetchImpl = fetch,
     openAsBlobImpl = openAsBlob,
+    retryDelaysMs = [1000, 5000, 15000],
   }: UploadOptions = {}
 ): Promise<string | null> {
   if (!url) return null;
 
-  const fd = new FormData();
   const type = MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-  fd.append(field, await openAsBlobImpl(filePath, { type }), basename(filePath));
-
-  const res = await fetchImpl(url, {
-    method: 'POST',
-    headers: headers ? JSON.parse(headers) : undefined,
-    body: fd,
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) throw new Error(`Upload failed: HTTP ${res.status}`);
-  const body = (await res.text()).trim();
-  return /^https?:\/\/\S+$/.test(body) ? body : url;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const fd = new FormData();
+      fd.append(field, await openAsBlobImpl(filePath, { type }), basename(filePath));
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers: headers ? JSON.parse(headers) : undefined,
+        body: fd,
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw Object.assign(new Error(`Upload failed: HTTP ${res.status}`), { status: res.status });
+      const body = (await res.text()).trim();
+      return /^https?:\/\/\S+$/.test(body) ? body : url;
+    } catch (e) {
+      // Network errors ("fetch failed", timeouts), 429 and 5xx are transient; other 4xx and bad headers JSON are not
+      const status = (e as { status?: number }).status;
+      const transient = status === undefined ? !(e instanceof SyntaxError) : status === 429 || status >= 500;
+      if (!transient || attempt >= retryDelaysMs.length) throw e;
+      await new Promise(r => setTimeout(r, retryDelaysMs[attempt]));
+    }
+  }
 }
 
 export interface Uploader {
