@@ -1,11 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import puppeteer from 'puppeteer';
+import type { Browser, Page } from 'puppeteer';
 import { puppeteerSemaphore, defaultOutDir, ensureDefaultDirectory } from '../config/runtime.js';
 import { ALLOWED_OUTPUT_DIRS, MAX_CONCURRENT_SCREENSHOTS, ALLOW_LOCAL } from '../config/index.js';
 import { validateUrl } from '../validators/url.js';
+import { launchGuardedPage } from '../utils/browser.js';
 import { validateOutputPath } from '../validators/path.js';
 import { ok, err, timestamp, ensureDir } from '../utils/helpers.js';
+import { withUpload } from '../utils/upload.js';
 
 // Semaphore protects expensive Puppeteer operations
 
@@ -55,57 +57,11 @@ export function registerTakeScreenshot(server: McpServer): void {
       }
 
       // Declare browser outside try block to ensure cleanup in finally
-      let browser;
+      let browser: Browser | undefined;
+      let page: Page;
       try {
-        // SEC-001: IP pinning to protect against DNS rebinding attacks
-        const browserArgs = [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-        ];
-        if (urlValidation.resolvedIp && urlValidation.hostname) {
-          // Chromium requires bracket notation for IPv6 addresses in host-resolver-rules
-          const pinnedIp = urlValidation.resolvedIp.includes(':')
-            ? `[${urlValidation.resolvedIp}]`
-            : urlValidation.resolvedIp;
-          browserArgs.push(`--host-resolver-rules=MAP ${urlValidation.hostname} ${pinnedIp}`);
-        }
-        browser = await puppeteer.launch({ headless: true, args: browserArgs });
-        const page = await browser.newPage();
+        ({ browser, page } = await launchGuardedPage(url, urlValidation));
         if (width && height) await page.setViewport({ width, height });
-
-        // SEC-001: Intercept requests to prevent SSRF via HTTP redirects.
-        // page.goto() follows redirects by default; a 302 to an internal host
-        // would bypass the initial URL validation and --host-resolver-rules pin.
-        await page.setRequestInterception(true);
-        page.on('request', async (req) => {
-          try {
-            // Only validate navigation requests (initial load + redirects).
-            // Subresource requests (images, scripts, etc.) are allowed through
-            // since blocking them would break most pages, and the primary SSRF
-            // threat is navigation-level redirects to internal services.
-            if (req.isNavigationRequest()) {
-              const reqUrl = req.url();
-              // Allow the original validated URL through without re-validation
-              if (reqUrl === url) {
-                req.continue();
-                return;
-              }
-              // Validate redirect target against SSRF rules
-              const redirectValidation = await validateUrl(reqUrl, { allowLocal: ALLOW_LOCAL });
-              if (!redirectValidation.valid) {
-                req.abort('blockedbyclient');
-                return;
-              }
-              req.continue();
-            } else {
-              req.continue();
-            }
-          } catch {
-            // If validation throws unexpectedly, abort the request rather than
-            // leaving it dangling (which would hang page navigation until timeout).
-            try { req.abort('failed'); } catch { /* request may already be handled */ }
-          }
-        });
 
         await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
         if (waitForSelector) await page.waitForSelector(waitForSelector, { timeout: 30000 });
@@ -120,7 +76,7 @@ export function registerTakeScreenshot(server: McpServer): void {
         } else {
           await page.screenshot({ path: dest, fullPage: fullPage || false });
         }
-        return ok(`Screenshot saved: ${dest}`);
+        return await withUpload(`Screenshot saved: ${dest}`, [dest]);
       } catch (e) {
         return err(`Screenshot error: ${e instanceof Error ? e.message : e}`);
       } finally {
