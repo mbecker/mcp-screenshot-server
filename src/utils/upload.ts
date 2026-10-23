@@ -20,7 +20,7 @@ export interface UploadOptions {
 
 const MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.md': 'text/markdown', '.css': 'text/css', '.html': 'text/html',
+  '.md': 'text/markdown', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json',
 };
 
 /**

@@ -44,6 +44,28 @@ describe('launchGuardedPage', () => {
     expect(ok.continue).toHaveBeenCalled();
   });
 
+  it('validates another host once per browser, and never caches a failure', async () => {
+    vi.mocked(validateUrl).mockResolvedValueOnce({ valid: false, error: 'DNS resolution failed' });
+    const first = nav('https://www.example.com/a');
+    await onRequest(first);
+    expect(first.abort).toHaveBeenCalled(); // failure is not remembered…
+
+    vi.mocked(validateUrl).mockResolvedValue({ valid: true });
+    const second = nav('https://www.example.com/b');
+    await onRequest(second); // …so this one is validated again
+    expect(second.continue).toHaveBeenCalled();
+    expect(validateUrl).toHaveBeenCalledTimes(2);
+
+    const third = nav('https://www.example.com/c?x=1');
+    await onRequest(third); // now remembered: no third lookup
+    expect(third.continue).toHaveBeenCalled();
+    expect(validateUrl).toHaveBeenCalledTimes(2);
+
+    const otherScheme = nav('http://www.example.com/d');
+    await onRequest(otherScheme); // different protocol is a different key
+    expect(validateUrl).toHaveBeenCalledTimes(3);
+  });
+
   it('does not treat a lookalike subdomain as the pinned host', async () => {
     vi.mocked(validateUrl).mockResolvedValueOnce({ valid: false, error: 'private IP' });
     const req = nav('https://example.com.attacker.test/');

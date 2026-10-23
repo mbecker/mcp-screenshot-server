@@ -18,6 +18,13 @@ import { buildAgentsMd, MANIFEST, type Manifest } from '../utils/handoff.js';
 /** Cap on elements serialized per page, keeps the HTML readable for agents. */
 const MAX_HTML_NODES = 5000;
 
+/** Same site, ignoring a leading "www." (e.g. aok.de redirecting to www.aok.de). */
+export const sameSite = (a: URL, b: URL): boolean =>
+  a.protocol === b.protocol && a.port === b.port && a.hostname.replace(/^www\./, '') === b.hostname.replace(/^www\./, '');
+
+/** Progress goes to stderr: stdout carries the MCP protocol. */
+const progress = (msg: string) => console.error(`[take_page_screenshots] ${msg}`);
+
 /** Filename-safe slug of a URL path, e.g. /docs/install → docs-install. */
 export const pathSlug = (u: URL): string =>
   (u.pathname + u.search).replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60) || 'home';
@@ -70,10 +77,12 @@ export function registerTakePageScreenshots(server: McpServer): void {
         mkdirSync(outDir, { recursive: true });
         const assets = extractDesign ? recordAssets(page) : undefined;
 
-        // BFS over same-origin links. Same-origin also keeps every navigation on the
-        // host whose IP launchGuardedPage pinned; redirects are re-validated there.
+        // BFS over same-origin links. Navigations to the pinned host skip the DNS
+        // re-check; any other origin (e.g. the www. host the start page redirects to)
+        // is re-validated by launchGuardedPage on every navigation.
         const queue: { href: string; level: number }[] = [{ href: start.href, level: 0 }];
         const seen = new Set([start.href]);
+        const origins = new Set([start.origin]);
         const files: string[] = [];
         const report: string[] = [];
         const captured: CapturedPage[] = [];
@@ -89,9 +98,16 @@ export function registerTakePageScreenshots(server: McpServer): void {
           const shots: Record<string, string> = {};
           try {
             for (const [i, name] of presets.entries()) {
+              progress(`[${n + 1}/${Math.min(queue.length, maxPages)}] ${href} @ ${name}`);
               await page.emulate(DEVICE_PRESETS[name]);
               await page.goto(href, { waitUntil: 'networkidle2', timeout: 30000 });
               if (waitForTimeout) await new Promise(r => setTimeout(r, waitForTimeout));
+              if (n === 0 && i === 0) {
+                // Follow links on the host the start page redirected to, if it is the same site
+                const landed = new URL(page.url());
+                landed.hash = '';
+                if (sameSite(landed, start)) { origins.add(landed.origin); seen.add(landed.href); }
+              }
 
               const dest = join(outDir, `${prefix}-${name}.png`);
               await page.screenshot({ path: dest, fullPage });
@@ -114,7 +130,7 @@ export function registerTakePageScreenshots(server: McpServer): void {
                 for (const link of links) {
                   const u = new URL(link);
                   u.hash = '';
-                  if (u.origin === start.origin && !seen.has(u.href)) {
+                  if (origins.has(u.origin) && !seen.has(u.href)) {
                     seen.add(u.href);
                     queue.push({ href: u.href, level: level + 1 });
                   }
@@ -131,6 +147,7 @@ export function registerTakePageScreenshots(server: McpServer): void {
 
         if (captured.length && assets) {
           // Local copies of every image/font the pages loaded
+          progress(`writing rebuild package (${assets.files.size} assets)`);
           await assets.settle();
           const local = new Map([...assets.files].map(([u, a]) => [u, a.path]));
           for (const a of assets.files.values()) {
@@ -180,6 +197,7 @@ export function registerTakePageScreenshots(server: McpServer): void {
             `${captured.length} page(s) .html + .content.json, ${assets.files.size} asset(s) in assets/`);
         }
 
+        if (process.env.SCREENSHOT_UPLOAD_URL) progress(`uploading ${files.length} files`);
         const skipped = queue.length - Math.min(queue.length, maxPages);
         return await withUpload(
           `Saved ${files.length} files to ${outDir}\n${report.join('\n')}` +

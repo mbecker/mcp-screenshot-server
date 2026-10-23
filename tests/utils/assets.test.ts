@@ -41,6 +41,19 @@ describe('localizeUrls', () => {
 });
 
 describe('recordAssets', () => {
+  it('gives up on a body read that never resolves', async () => {
+    let handler: (r: unknown) => void = () => {};
+    const store = recordAssets({ on: ((_e: string, h: typeof handler) => { handler = h; }) as never }, 50);
+    handler({
+      url: () => 'https://x.test/stuck.png', ok: () => true, request: () => ({ resourceType: () => 'image' }),
+      headers: () => ({}), buffer: () => new Promise(() => {}),
+    });
+    const start = Date.now();
+    await store.settle();
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(store.files.size).toBe(0);
+  });
+
   it('keeps images, fonts and stylesheet text from successful responses', async () => {
     let handler: (r: unknown) => void = () => {};
     const store = recordAssets({ on: ((_e: string, h: typeof handler) => { handler = h; }) as never });

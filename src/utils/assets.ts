@@ -10,6 +10,14 @@ import type { HTTPResponse, Page } from 'puppeteer';
 /** Per-file and total caps so a media-heavy site cannot fill the disk. */
 export const MAX_ASSET_BYTES = 15 * 1024 * 1024;
 export const MAX_TOTAL_ASSET_BYTES = 150 * 1024 * 1024;
+/**
+ * A response body read can stay unanswered forever (seen with Chrome in Docker),
+ * which would block settle() and the whole capture. Give up on that asset instead.
+ */
+export const ASSET_READ_TIMEOUT_MS = 15000;
+
+const within = <T>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out')), ms).unref())]);
 
 const EXT: Record<string, string> = {
   'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp', 'image/avif': '.avif',
@@ -40,7 +48,7 @@ export interface AssetStore {
 }
 
 /** Record images, fonts and stylesheets as the page loads them. */
-export function recordAssets(page: Pick<Page, 'on'>): AssetStore {
+export function recordAssets(page: Pick<Page, 'on'>, readTimeoutMs = ASSET_READ_TIMEOUT_MS): AssetStore {
   const store: AssetStore = { files: new Map(), css: new Map(), settle: async () => { await Promise.allSettled(pending); } };
   const pending: Promise<unknown>[] = [];
   let total = 0;
@@ -50,12 +58,12 @@ export function recordAssets(page: Pick<Page, 'on'>): AssetStore {
     if (!['image', 'font', 'stylesheet'].includes(type) || !/^https?:/.test(url) || !res.ok()) return;
     if (type === 'stylesheet' ? store.css.has(url) : store.files.has(url)) return;
     pending.push((async () => {
-      if (type === 'stylesheet') { store.css.set(url, await res.text()); return; }
-      const data = await res.buffer();
+      if (type === 'stylesheet') { store.css.set(url, await within(res.text(), readTimeoutMs)); return; }
+      const data = await within(res.buffer(), readTimeoutMs);
       if (data.length > MAX_ASSET_BYTES || total + data.length > MAX_TOTAL_ASSET_BYTES) return;
       total += data.length;
       store.files.set(url, { path: assetPath(url, res.headers()['content-type']), data });
-    })().catch(() => { /* body unavailable (redirect, aborted) */ }));
+    })().catch(() => { /* body unavailable (redirect, aborted, timed out) */ }));
   });
   return store;
 }

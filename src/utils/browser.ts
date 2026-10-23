@@ -36,6 +36,10 @@ export async function launchGuardedPage(
     // page.goto() follows redirects by default; a 302 to an internal host
     // would bypass the initial URL validation and --host-resolver-rules pin.
     await page.setRequestInterception(true);
+    // Hosts (protocol + hostname) whose navigation already passed validation in this
+    // browser. Re-resolving them adds no protection (Chromium resolves on its own) and
+    // a transient DNS failure would wrongly block the page.
+    const validatedHosts = new Set<string>();
     page.on('request', async (req) => {
       try {
         // Only validate navigation requests (initial load + redirects).
@@ -50,12 +54,19 @@ export async function launchGuardedPage(
             req.continue();
             return;
           }
+          const { protocol, hostname } = new URL(reqUrl);
+          const hostKey = `${protocol}//${hostname}`;
+          if (validatedHosts.has(hostKey)) {
+            req.continue();
+            return;
+          }
           // Validate redirect target against SSRF rules
           const redirectValidation = await validateUrl(reqUrl, { allowLocal: ALLOW_LOCAL });
           if (!redirectValidation.valid) {
             req.abort('blockedbyclient');
             return;
           }
+          validatedHosts.add(hostKey);
           req.continue();
         } else {
           req.continue();

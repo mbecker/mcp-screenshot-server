@@ -31,7 +31,7 @@ vi.mock('../../src/utils/assets.js', async (orig) => ({
   })),
 }));
 
-const mockPage = { emulate: vi.fn(), goto: vi.fn(), $$eval: vi.fn(), screenshot: vi.fn(), evaluate: vi.fn(), on: vi.fn(), waitForNetworkIdle: vi.fn(async () => {}) };
+const mockPage = { emulate: vi.fn(), goto: vi.fn(), $$eval: vi.fn(), screenshot: vi.fn(), evaluate: vi.fn(), on: vi.fn(), waitForNetworkIdle: vi.fn(async () => {}), url: vi.fn(() => 'https://example.com/') };
 const mockBrowser = { close: vi.fn() };
 vi.mock('../../src/utils/browser.js', () => ({
   launchGuardedPage: vi.fn(async () => ({ browser: mockBrowser, page: mockPage })),
@@ -82,6 +82,7 @@ describe('take-page-screenshots', () => {
     };
     let current = '';
     mockPage.goto.mockImplementation(async (href: string) => { current = href; });
+    mockPage.url.mockImplementation(() => current);
     mockPage.$$eval.mockImplementation(async () => links[current] ?? []);
 
     const result = await capturedHandler({ url: 'https://example.com/', presets: ['iphone-17', 'desktop'], depth: 1, maxPages: 10 });
@@ -123,6 +124,22 @@ describe('take-page-screenshots', () => {
     ]);
     expect(mockBrowser.close).toHaveBeenCalled();
     expect(mockSemaphore.release).toHaveBeenCalled();
+  });
+
+  it('follows links on the www. host the start page redirects to, but not other sites', async () => {
+    const run = async (landedOn: string) => {
+      vi.clearAllMocks();
+      mockSemaphore.tryAcquire.mockReturnValue(true);
+      mockPage.goto.mockResolvedValue(undefined);
+      mockPage.url.mockReturnValue(landedOn);
+      mockPage.$$eval.mockResolvedValue([`${new URL(landedOn).origin}/a`, 'https://example.com/b']);
+      await capturedHandler({ url: 'https://example.com/', presets: ['desktop'], depth: 1, extractDesign: false });
+      return mockPage.goto.mock.calls.map(c => c[0]);
+    };
+    // aok.de → www.aok.de style redirect: both hosts count as the site; the landing page is not re-visited
+    expect(await run('https://www.example.com/')).toEqual(['https://example.com/', 'https://www.example.com/a', 'https://example.com/b']);
+    // redirect to an unrelated domain does not widen the crawl
+    expect(await run('https://login.other.test/')).toEqual(['https://example.com/', 'https://example.com/b']);
   });
 
   it('caps at maxPages and reports the rest', async () => {

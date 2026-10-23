@@ -31,6 +31,8 @@ describe('uploadScreenshot', () => {
     await uploadScreenshot('/out/theme.css', { url: 'https://h/up', fetchImpl, openAsBlobImpl });
     expect(openAsBlobImpl).toHaveBeenCalledWith('/out/DESIGN.md', { type: 'text/markdown' });
     expect(openAsBlobImpl).toHaveBeenCalledWith('/out/theme.css', { type: 'text/css' });
+    await uploadScreenshot('/out/manifest.json', { url: 'https://h/up', fetchImpl, openAsBlobImpl });
+    expect(openAsBlobImpl).toHaveBeenCalledWith('/out/manifest.json', { type: 'application/json' });
   });
 
   it('defaults field to "file" and returns a URL from the response body', async () => {
