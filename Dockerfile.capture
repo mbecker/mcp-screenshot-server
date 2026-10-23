@@ -1,0 +1,31 @@
+# Runs take_page_screenshots from the command line in a container.
+# Used by `npm run test:capture`; output goes to /home/capture/output (mount a host folder there).
+FROM node:22-bookworm
+
+# Chromium dependencies (Dockerfile.linux-test set + libxfixes3), plus fonts so pages
+# without web fonts still render text and emoji.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+    libpango-1.0-0 libcairo2 libasound2 \
+    fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep the browser outside $HOME so it works for any --user
+ENV PUPPETEER_CACHE_DIR=/opt/puppeteer
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts && npx puppeteer browsers install chrome
+
+COPY tsconfig.json ./
+COPY src ./src
+COPY scripts/capture.mjs ./scripts/
+RUN npm run build
+
+# The server only writes below $HOME; SCREENSHOT_OUTPUT_DIR is relative to it
+ENV HOME=/home/capture \
+    SCREENSHOT_OUTPUT_DIR=output
+RUN mkdir -p /home/capture/output && chmod -R 777 /home/capture
+
+ENTRYPOINT ["node", "/app/scripts/capture.mjs"]

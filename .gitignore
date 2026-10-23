@@ -10,3 +10,4 @@ _mcp/llms-full.txt
 # MCP Registry auth tokens (created by mcp-publisher login)
 .mcpregistry_github_token
 .mcpregistry_registry_token
+captures/

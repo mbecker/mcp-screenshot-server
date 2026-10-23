@@ -294,6 +294,7 @@ For full details, see [`docs/security.md`](docs/security.md).
 | `npm run test:e2e`   | E2E tests (real Puppeteer/native tools)|
 | `npm run test:all`   | All test tiers together                |
 | `npm run test:linux` | Linux e2e via Docker (requires Docker) |
+| `npm run test:capture -- --url <url> …` | Capture a site in Docker into `./captures` (see below) |
 | `npm run test:watch` | Run tests in watch mode                |
 | `npm run test:coverage` | Run tests with coverage report      |
 | `npm run lint`       | Lint source with ESLint                |
@@ -339,6 +340,28 @@ npm test                 # Unit tests (~300ms)
 npm run test:linux       # Linux provider tests in Docker
 npm run test:all         # Everything
 ```
+
+### Capturing a Site from the Command Line
+
+`npm run test:capture` builds a Docker image (`Dockerfile.capture`, Chromium included) and runs `take_page_screenshots` for a URL. Results land in a local folder:
+
+```bash
+npm run test:capture -- --url https://example.com
+npm run test:capture -- --url https://example.com --presets iphone-17,desktop --depth 1 --max-pages 5
+npm run test:capture -- --url https://example.com --out ~/captures --full-page --no-design
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | Page to capture |
+| `--presets <list>` | Comma-separated presets (default: all) |
+| `--depth <n>` / `--max-pages <n>` | Follow same-origin links |
+| `--full-page`, `--wait <ms>` | Capture options |
+| `--no-design` | Screenshots only, no rebuild package |
+| `--out <dir>` | Host folder for results (default `./captures`) |
+| `--no-build` | Reuse the existing image |
+
+`SCREENSHOT_UPLOAD_*` and `ALLOW_LOCAL` are passed into the container when set. Files are written as your user. Without Docker, `npm run build && node scripts/capture.mjs --url …` does the same on the host (output in `~/Documents/screenshots`).
 
 ### Debugging with MCP Inspector
 

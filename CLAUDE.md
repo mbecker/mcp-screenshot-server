@@ -22,6 +22,7 @@ npm run test:integration # Integration tests (real DNS, real filesystem)
 npm run test:e2e         # E2E tests (real Puppeteer, real screencapture)
 npm run test:all         # All tiers together
 npm run test:linux       # Linux e2e via Docker (Xvfb + maim/scrot/import)
+npm run test:capture -- --url <url> [--presets a,b] [--depth n] [--out dir]  # capture a site in Docker (Dockerfile.capture → scripts/capture.mjs)
 npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage
 npm run lint             # ESLint on src/
